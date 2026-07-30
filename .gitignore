@@ -1,0 +1,12 @@
+# Credentials - never commit tokens
+.credentials/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+uv.lock
