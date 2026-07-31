@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +10,11 @@ from cryptography.hazmat.primitives import serialization
 
 from slack_reader_mcp import auth, server
 from slack_reader_mcp.auth import AuthRequiredError
-from slack_reader_mcp.slack_client import EndpointNotAllowedError, SlackAPIError, SlackClient
+from slack_reader_mcp.slack_client import (
+    EndpointNotAllowedError,
+    SlackAPIError,
+    SlackClient,
+)
 
 
 def slack_response(status_code: int = 200, **kwargs: object) -> httpx.Response:
@@ -52,20 +55,30 @@ def test_parse_slack_url_rejects_invalid_urls(slack_url: str) -> None:
 
 
 def test_slack_ts_to_local_iso_formats_valid_timestamp() -> None:
-    expected = datetime.fromtimestamp(1600000000.123456, tz=timezone.utc).astimezone().isoformat(timespec="seconds")
+    expected = (
+        datetime.fromtimestamp(1600000000.123456, tz=timezone.utc)
+        .astimezone()
+        .isoformat(timespec="seconds")
+    )
 
     assert server.slack_ts_to_local_iso("1600000000.123456") == expected
 
 
-def test_endpoint_whitelist_blocks_non_readonly_method_before_http(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_endpoint_whitelist_blocks_non_readonly_method_before_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fail_request(*args: object, **kwargs: object) -> httpx.Response:
-        raise AssertionError("HTTP request should not be sent for a disallowed endpoint")
+        raise AssertionError(
+            "HTTP request should not be sent for a disallowed endpoint"
+        )
 
     monkeypatch.setattr("slack_reader_mcp.slack_client.httpx.request", fail_request)
     client = SlackClient(lambda: "xoxp-test")
 
     with pytest.raises(EndpointNotAllowedError):
-        client._request("POST", "chat.postMessage", json={"channel": "C1", "text": "blocked"})
+        client._request(
+            "POST", "chat.postMessage", json={"channel": "C1", "text": "blocked"}
+        )
 
 
 def test_resolve_mentions_replaces_plain_and_labeled_mentions() -> None:
@@ -75,7 +88,10 @@ def test_resolve_mentions_replaces_plain_and_labeled_mentions() -> None:
         "user": {"profile": {"display_name": f"name-{user}"}},
     }
 
-    assert client.resolve_mentions("Hi <@U123> and <@U456|fallback>") == "Hi @name-U123 and @name-U456"
+    assert (
+        client.resolve_mentions("Hi <@U123> and <@U456|fallback>")
+        == "Hi @name-U123 and @name-U456"
+    )
 
 
 def test_resolve_user_caches_users_info_result() -> None:
@@ -119,12 +135,16 @@ def test_slack_api_error_messages_include_japanese_guidance(
     assert expected_guidance in str(exc_info.value)
 
 
-def test_rate_limit_http_status_raises_guidance_without_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rate_limit_http_status_raises_guidance_without_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fake_request(*args: object, **kwargs: object) -> httpx.Response:
         return slack_response(429, headers={"Retry-After": "10"})
 
     monkeypatch.setattr("slack_reader_mcp.slack_client.httpx.request", fake_request)
-    monkeypatch.setattr("slack_reader_mcp.slack_client.time.sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        "slack_reader_mcp.slack_client.time.sleep", lambda seconds: None
+    )
     client = SlackClient(lambda: "xoxp-test", max_retries=0)
 
     with pytest.raises(SlackAPIError) as exc_info:
@@ -148,8 +168,12 @@ def test_search_context_clamps_count_to_twenty(monkeypatch: pytest.MonkeyPatch) 
     assert payloads == [{"query": "hello", "limit": 20}]
 
 
-def test_get_access_token_raises_auth_required_when_credentials_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    missing_credentials = Path(__file__).parent / ".scratch" / "missing-credentials.json"
+def test_get_access_token_raises_auth_required_when_credentials_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_credentials = (
+        Path(__file__).parent / ".scratch" / "missing-credentials.json"
+    )
     if missing_credentials.exists():
         missing_credentials.unlink()
     monkeypatch.setattr(auth, "CREDENTIALS_PATH", missing_credentials)
@@ -163,7 +187,9 @@ def test_generate_self_signed_cert_files_produces_loadable_cert_and_key() -> Non
     generated = auth._generate_self_signed_cert_files(cert_dir)
     try:
         cert = x509.load_pem_x509_certificate(generated.cert_path.read_bytes())
-        key = serialization.load_pem_private_key(generated.key_path.read_bytes(), password=None)
+        key = serialization.load_pem_private_key(
+            generated.key_path.read_bytes(), password=None
+        )
 
         assert cert.subject.rfc4514_string() == "CN=localhost"
         assert key is not None
@@ -175,3 +201,163 @@ def test_generate_self_signed_cert_files_produces_loadable_cert_and_key() -> Non
         scratch_dir = cert_dir.parent
         if scratch_dir.exists() and not any(scratch_dir.iterdir()):
             scratch_dir.rmdir()
+
+
+class _FakeClient:
+    """Minimal stand-in for SlackClient used to unit test the MCP tools."""
+
+    def __init__(
+        self,
+        *,
+        search_response: dict[str, object] | None = None,
+        replies_pages: list[dict[str, object]] | None = None,
+    ) -> None:
+        self.search_response = search_response or {}
+        self.replies_pages = list(replies_pages or [])
+        self.replies_calls: list[dict[str, object]] = []
+
+    def resolve_user(self, user_id: str) -> str:
+        return f"user:{user_id}"
+
+    def resolve_mentions(self, text: str) -> str:
+        return text
+
+    def search_context(
+        self, query: str, count: int = 10, cursor: str | None = None
+    ) -> dict[str, object]:
+        return self.search_response
+
+    def conversations_replies(
+        self, channel: str, ts: str, cursor: str | None = None, limit: int = 200
+    ) -> dict[str, object]:
+        self.replies_calls.append({"channel": channel, "ts": ts, "cursor": cursor})
+        if not self.replies_pages:
+            return {"messages": []}
+        return self.replies_pages[
+            min(len(self.replies_calls) - 1, len(self.replies_pages) - 1)
+        ]
+
+
+def test_slack_search_context_returns_tool_result_with_structured_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _FakeClient(
+        search_response={
+            "results": {
+                "messages": [
+                    {
+                        "ts": "1700000000.000100",
+                        "user": "U1",
+                        "text": "hello",
+                        "channel": "C1",
+                        "permalink": "https://example.slack.com/p1",
+                    }
+                ]
+            },
+            "response_metadata": {"next_cursor": "next-page"},
+        }
+    )
+    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
+
+    result = server.slack_search_context(query="hello")
+
+    assert result.is_error is False
+    assert result.structured_content is not None
+    assert result.structured_content["next_cursor"] == "next-page"
+    assert result.structured_content["results"][0]["channel_id"] == "C1"
+    assert result.structured_content["results"][0]["author"] == "user:U1"
+    assert "permalink: https://example.slack.com/p1" in result.content[0].text
+    assert "次ページ取得用cursor: next-page" in result.content[0].text
+
+
+def test_slack_search_context_returns_is_error_tool_result_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_auth_required() -> _FakeClient:
+        raise AuthRequiredError("認可コマンドを実行してください")
+
+    monkeypatch.setattr(server, "_get_client", raise_auth_required)
+
+    result = server.slack_search_context(query="hello")
+
+    assert result.is_error is True
+    assert "認可コマンド" in result.content[0].text
+
+
+def test_slack_get_thread_from_url_invalid_url_returns_is_error_without_crashing() -> (
+    None
+):
+    # Regression test: with output_schema set, returning a bare str (instead of
+    # ToolResult) used to crash with "structured_content must be a dict".
+    result = server.slack_get_thread_from_url("not a url")
+
+    assert result.is_error is True
+    assert "Slack URL" in result.content[0].text
+
+
+def test_slack_get_thread_from_url_builds_structured_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _FakeClient(
+        replies_pages=[
+            {
+                "messages": [
+                    {"ts": "1700000000.000100", "user": "U1", "text": "parent"},
+                    {"ts": "1700000001.000200", "user": "U2", "text": "reply"},
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
+
+    result = server.slack_get_thread_from_url(
+        "https://example.slack.com/archives/C123ABC/p1700000000000100"
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["channel_id"] == "C123ABC"
+    assert result.structured_content["reply_count"] == 1
+    assert len(result.structured_content["messages"]) == 2
+    assert "メッセージ数: 2（返信 1 件）" in result.content[0].text
+
+
+def test_slack_get_thread_from_url_no_messages_returns_empty_structured_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression test: the previous implementation returned a bare str for the
+    # empty case, which also crashed once output_schema was declared.
+    fake_client = _FakeClient(replies_pages=[{"messages": []}])
+    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
+
+    result = server.slack_get_thread_from_url(
+        "https://example.slack.com/archives/C123ABC/p1700000000000100"
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["messages"] == []
+    assert result.structured_content["reply_count"] == 0
+
+
+def test_slack_get_thread_from_url_stops_at_max_pagination_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _FakeClient()
+
+    def never_ending_replies(
+        channel: str, ts: str, cursor: str | None = None, limit: int = 200
+    ) -> dict[str, object]:
+        fake_client.replies_calls.append(
+            {"channel": channel, "ts": ts, "cursor": cursor}
+        )
+        # Always returns a next_cursor so the loop would run forever without a cap.
+        return {"messages": [], "response_metadata": {"next_cursor": "still-more"}}
+
+    fake_client.conversations_replies = never_ending_replies  # type: ignore[method-assign]
+    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
+
+    result = server.slack_get_thread_from_url(
+        "https://example.slack.com/archives/C123ABC/p1700000000000100"
+    )
+
+    assert result.is_error is False
+    assert len(fake_client.replies_calls) == server._MAX_THREAD_PAGES

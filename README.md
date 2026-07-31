@@ -137,6 +137,13 @@ MCP サーバー設定に次のように追加します。
 
 ## 提供ツール
 
+いずれのツールも、人間が読みやすい整形済みテキスト（`content`）に加えて、
+同じ内容を持つ構造化データ（`structuredContent`）を返します。AI クライアント
+が permalink やタイムスタンプなどのフィールドを正確に扱いたい場合は
+`structuredContent` を、要約して回答するだけの場合はテキストをそのまま利用
+できます。取得や検索に失敗した場合は `isError=true` とエラーメッセージが返り
+ます。
+
 ### `slack_search_context(query, count=10, cursor=None)`
 
 Slack 内のメッセージと周辺文脈を `assistant.search.context` で検索します。
@@ -154,6 +161,26 @@ Slack 内のメッセージと周辺文脈を `assistant.search.context` で検�
 - 検索結果のメッセージ、周辺文脈（`context_messages` / `context`）、permalink を整形して返します。
 - Slack のユーザー ID や `<@U...>` メンションは `users.info` で表示名に解決します。
 - レスポンスに次ページがある場合、結果末尾に `次ページ取得用cursor: ...` を表示します。次回呼び出し時にその値を `cursor` に指定してください。
+- `structuredContent` は次の形（`SearchContextOutput`）です。
+
+  ```json
+  {
+    "results": [
+      {
+        "ts": "1700000000.000100",
+        "timestamp": "2023-11-15T07:13:20+09:00",
+        "author": "Alice",
+        "channel_id": "C1",
+        "text": "本文",
+        "permalink": "https://.../p1",
+        "context_messages": [
+          {"ts": "...", "timestamp": "...", "author": "...", "text": "..."}
+        ]
+      }
+    ],
+    "next_cursor": "abc"
+  }
+  ```
 
 ### `slack_get_thread_from_url(slack_url)`
 
@@ -169,8 +196,19 @@ Slack のメッセージ URL またはスレッド URL からスレッド全文�
 - URL に `thread_ts` クエリパラメータがある場合は、それを親スレッドの `ts` として優先します。
 - `p1600000000123456` 形式の permalink timestamp は `1600000000.123456` に変換します。
 - `GET https://slack.com/api/conversations.replies` を `channel`, `ts`, `limit=200` で呼び出します。
-- `response_metadata.next_cursor` が空でなくなるまで `cursor` を指定してページネーションし、全メッセージを取得します。
+- `response_metadata.next_cursor` が空でなくなるまで `cursor` を指定してページネーションし、全メッセージを取得します（想定外の応答で無限ループしないよう、最大100ページで打ち切ります）。
 - 親メッセージと返信を時系列に並べ、送信者、ローカルタイムゾーンの時刻、本文を整形して返します。
+- `structuredContent` は次の形（`ThreadOutput`）です。
+
+  ```json
+  {
+    "channel_id": "C123ABC",
+    "reply_count": 1,
+    "messages": [
+      {"ts": "...", "timestamp": "...", "author": "...", "text": "..."}
+    ]
+  }
+  ```
 
 ## トラブルシューティング
 
