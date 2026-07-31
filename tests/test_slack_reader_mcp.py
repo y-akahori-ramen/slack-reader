@@ -33,7 +33,8 @@ def test_parse_slack_url_converts_permalink_ts_for_archive_channel_ids() -> None
 
 def test_parse_slack_url_prefers_thread_ts_query_param() -> None:
     channel, ts = server.parse_slack_url(
-        "https://example.slack.com/archives/C123ABC/p1600000000123456?thread_ts=1599999999.000200&cid=C123ABC"
+        "https://example.slack.com/archives/C123ABC/p1600000000123456"
+        "?thread_ts=1599999999.000200&cid=C123ABC"
     )
 
     assert channel == "C123ABC"
@@ -107,6 +108,23 @@ def test_resolve_user_caches_users_info_result() -> None:
     assert client.resolve_user("U123") == "Alice"
     assert client.resolve_user("U123") == "Alice"
     assert calls == ["U123"]
+
+
+def test_resolve_user_caches_failures_to_avoid_repeated_api_calls() -> None:
+    client = SlackClient(lambda: "xoxp-test")
+    calls: list[str] = []
+
+    def users_info(user: str) -> dict[str, object]:
+        calls.append(user)
+        raise SlackAPIError("user_not_found", "user not found")
+
+    client.users_info = users_info  # type: ignore[method-assign]
+
+    # bot_id (B...) など users.info で解決できないIDは失敗もキャッシュされ、
+    # 同一IDに対してAPIを繰り返し呼ばない。
+    assert client.resolve_user("B123") == "B123"
+    assert client.resolve_user("B123") == "B123"
+    assert calls == ["B123"]
 
 
 @pytest.mark.parametrize(
@@ -399,6 +417,38 @@ def test_slack_get_thread_from_url_no_messages_returns_empty_structured_thread(
     assert result.is_error is False
     assert result.structured_content["messages"] == []
     assert result.structured_content["reply_count"] == 0
+
+
+def test_slack_get_thread_from_url_deduplicates_messages_across_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = _FakeClient(
+        replies_pages=[
+            {
+                "messages": [
+                    {"ts": "1700000000.000100", "user": "U1", "text": "parent"},
+                    {"ts": "1700000001.000200", "user": "U2", "text": "reply1"},
+                ],
+                "response_metadata": {"next_cursor": "page2"},
+            },
+            {
+                "messages": [
+                    # 親メッセージが2ページ目にも重複して現れるケース。
+                    {"ts": "1700000000.000100", "user": "U1", "text": "parent"},
+                    {"ts": "1700000002.000300", "user": "U3", "text": "reply2"},
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
+
+    result = server.slack_get_thread_from_url(
+        "https://example.slack.com/archives/C123ABC/p1700000000000100"
+    )
+
+    assert result.is_error is False
+    assert len(result.structured_content["messages"]) == 3
+    assert result.structured_content["reply_count"] == 2
 
 
 def test_slack_get_thread_from_url_stops_at_max_pagination_pages(

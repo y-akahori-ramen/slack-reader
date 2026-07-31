@@ -42,6 +42,8 @@ USER_SCOPES: tuple[str, ...] = (
     "groups:history",
     "im:history",
     "mpim:history",
+    "channels:read",
+    "groups:read",
     "users:read",
 )
 
@@ -77,7 +79,9 @@ def main() -> None:
         state = secrets.token_urlsafe(32)
         authorize_url = _build_authorize_url(config, state)
 
-        logger.info("Slack認可URLをブラウザで開きます。開かない場合は以下をコピーしてください:")
+        logger.info(
+            "Slack認可URLをブラウザで開きます。開かない場合は以下をコピーしてください:"
+        )
         logger.info("%s", authorize_url)
         webbrowser.open(authorize_url)
 
@@ -188,9 +192,7 @@ def _generate_self_signed_cert_files(
     _ensure_secure_credentials_dir(target_dir)
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name(
-        [x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]
-    )
+    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
     now = datetime.now(timezone.utc)
     certificate = (
         x509.CertificateBuilder()
@@ -228,7 +230,9 @@ def _generate_self_signed_cert_files(
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
-    return GeneratedCertificate(cert_path=cert_path, key_path=key_path, ssl_context=context)
+    return GeneratedCertificate(
+        cert_path=cert_path, key_path=key_path, ssl_context=context
+    )
 
 
 def _cleanup_generated_certificate(generated: GeneratedCertificate) -> None:
@@ -258,7 +262,9 @@ def _receive_oauth_code(
 
             received_state = params.get("state", [""])[0]
             if not secrets.compare_digest(received_state, expected_state):
-                callback["error"] = "stateパラメータが一致しません。認可をやり直してください。"
+                callback["error"] = (
+                    "stateパラメータが一致しません。認可をやり直してください。"
+                )
                 self._send_html(400, "Invalid state", callback["error"])
                 return
 
@@ -381,7 +387,11 @@ def _merge_refreshed_credentials(
     access_token = _extract_access_token(refreshed)
     refresh_token = _extract_refresh_token(refreshed) or current.get("refresh_token")
     expires_in = _extract_expires_in(refreshed)
-    authed_user = current.get("authed_user") if isinstance(current.get("authed_user"), dict) else {}
+    authed_user = (
+        current.get("authed_user")
+        if isinstance(current.get("authed_user"), dict)
+        else {}
+    )
 
     updated = dict(current)
     updated.update(
@@ -400,7 +410,9 @@ def _merge_refreshed_credentials(
 
 def _extract_access_token(payload: dict[str, Any]) -> str | None:
     authed_user = payload.get("authed_user")
-    if isinstance(authed_user, dict) and isinstance(authed_user.get("access_token"), str):
+    if isinstance(authed_user, dict) and isinstance(
+        authed_user.get("access_token"), str
+    ):
         return authed_user["access_token"]
     token = payload.get("access_token")
     return token if isinstance(token, str) else None
@@ -408,7 +420,9 @@ def _extract_access_token(payload: dict[str, Any]) -> str | None:
 
 def _extract_refresh_token(payload: dict[str, Any]) -> str | None:
     authed_user = payload.get("authed_user")
-    if isinstance(authed_user, dict) and isinstance(authed_user.get("refresh_token"), str):
+    if isinstance(authed_user, dict) and isinstance(
+        authed_user.get("refresh_token"), str
+    ):
         return authed_user["refresh_token"]
     token = payload.get("refresh_token")
     return token if isinstance(token, str) else None
@@ -449,7 +463,9 @@ def _load_credentials() -> dict[str, Any]:
 
 def _save_credentials(credentials: dict[str, Any]) -> None:
     _ensure_secure_credentials_dir(CREDENTIALS_DIR)
-    temp_path = CREDENTIALS_PATH.with_name(f"{CREDENTIALS_PATH.name}.{secrets.token_hex(8)}")
+    temp_path = CREDENTIALS_PATH.with_name(
+        f"{CREDENTIALS_PATH.name}.{secrets.token_hex(8)}"
+    )
     with temp_path.open("w", encoding="utf-8") as file:
         json.dump(credentials, file, ensure_ascii=False, indent=2, sort_keys=True)
         file.write("\n")

@@ -24,7 +24,6 @@ ALLOWED_ENDPOINTS = frozenset(
         "conversations.replies",
         "conversations.list",
         "users.info",
-        "oauth.v2.access",
     }
 )
 MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>")
@@ -66,6 +65,8 @@ class SlackClient:
         timeout: HTTP timeout in seconds.
         max_retries: Number of rate-limit retries before raising SlackAPIError.
         max_retry_after: Maximum seconds to sleep for a Slack Retry-After value.
+            Kept short so a rate-limited call fails fast instead of blocking
+            past typical MCP client tool timeouts.
     """
 
     def __init__(
@@ -74,7 +75,7 @@ class SlackClient:
         *,
         timeout: float = 30.0,
         max_retries: int = 2,
-        max_retry_after: float = 60.0,
+        max_retry_after: float = 15.0,
     ) -> None:
         self._token_provider = token_provider
         self._timeout = timeout
@@ -186,6 +187,9 @@ class SlackClient:
             Exception
         ) as exc:  # noqa: BLE001 - mention resolution must not break tool output.
             logger.debug("Failed to resolve Slack user %s: %s", user_id, exc)
+            # Negative cache: bot IDs (B...) や "unknown" は users.info で常に
+            # 失敗するため、失敗を記憶して同一IDへの再呼び出しを防ぐ。
+            self._user_cache[user_id] = user_id
             return user_id
 
     def resolve_mentions(self, text: str) -> str:
@@ -217,9 +221,10 @@ class SlackClient:
             )
 
         url = f"{SLACK_API_BASE_URL}/{api_method}"
-        headers = {"Accept": "application/json"}
-        if api_method != "oauth.v2.access":
-            headers["Authorization"] = f"Bearer {self._token_provider()}"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._token_provider()}",
+        }
 
         for attempt in range(self._max_retries + 1):
             response = httpx.request(

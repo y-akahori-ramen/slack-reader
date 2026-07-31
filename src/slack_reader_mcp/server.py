@@ -83,8 +83,6 @@ def parse_slack_url(slack_url: str) -> tuple[str, str]:
         return channel_id, thread_ts
 
     digits = permalink_ts_match.group(1)
-    if len(digits) <= 6:
-        raise ValueError("Slack URL のメッセージts形式が不正です。")
     return channel_id, f"{digits[:-6]}.{digits[-6:]}"
 
 
@@ -370,6 +368,7 @@ def slack_get_thread_from_url(slack_url: str) -> ToolResult:
         channel_id, ts = parse_slack_url(slack_url)
         client = _get_client()
         messages: list[dict[str, Any]] = []
+        seen_ts: set[str] = set()
         cursor: str | None = None
         for _ in range(_MAX_THREAD_PAGES):
             response = client.conversations_replies(
@@ -377,9 +376,16 @@ def slack_get_thread_from_url(slack_url: str) -> ToolResult:
             )
             raw_messages = response.get("messages") or []
             if isinstance(raw_messages, list):
-                messages.extend(
-                    message for message in raw_messages if isinstance(message, dict)
-                )
+                for message in raw_messages:
+                    if not isinstance(message, dict):
+                        continue
+                    # ページをまたいで親メッセージ等が重複しても1件に正規化する。
+                    message_ts = _message_ts(message)
+                    if message_ts and message_ts in seen_ts:
+                        continue
+                    if message_ts:
+                        seen_ts.add(message_ts)
+                    messages.append(message)
             cursor = _next_cursor(response)
             if not cursor:
                 break

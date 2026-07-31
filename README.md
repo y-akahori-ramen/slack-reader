@@ -19,8 +19,8 @@ Slack Reader MCP は、Slack の情報を**読み取り専用**で参照する�
 - **User Token のみ使用**し、Bot Token は発行・使用しない
 - Bot Token Scopes は Slack App に追加しない
 - HTTP クライアント層で呼び出し可能エンドポイントをホワイトリスト制限する多層防御を行う
-  - 許可エンドポイント: `assistant.search.context`, `conversations.replies`, `conversations.list`, `users.info`, `oauth.v2.access`
-  - 上記以外の Slack API 呼び出しは例外になります
+  - 許可エンドポイント: `assistant.search.context`, `conversations.replies`, `conversations.list`, `users.info`
+  - 上記以外の Slack API 呼び出しは例外になります（OAuth トークン交換は auth モジュールが直接行い、このホワイトリストには含めません）
 
 ## 成果物構成
 
