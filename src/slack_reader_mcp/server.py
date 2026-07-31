@@ -176,6 +176,18 @@ class ThreadOutput(BaseModel):
     )
 
 
+class ChannelIdOutput(BaseModel):
+    """slack_resolve_channel_idツールの構造化された戻り値。"""
+
+    channel_name: str = Field(
+        description="検索に使用したチャンネル名（先頭の#は除去済み）"
+    )
+    channel_id: str | None = Field(
+        default=None, description="解決されたチャンネルID。見つからない場合はnull"
+    )
+    found: bool = Field(description="チャンネルが見つかったかどうか")
+
+
 def _build_message_output(
     client: SlackClient, message: dict[str, Any]
 ) -> MessageOutput:
@@ -387,12 +399,65 @@ def slack_get_thread_from_url(slack_url: str) -> ToolResult:
         return ToolResult(content=_tool_error_message(exc), is_error=True)
 
 
+@mcp.tool(output_schema=ChannelIdOutput.model_json_schema())
+def slack_resolve_channel_id(
+    channel_name: str, include_archived: bool = False
+) -> ToolResult:
+    """チャンネル名からチャンネルIDを読み取り専用で解決します。
+
+    Slackのメッセージ取得系ツール（`conversations.replies` 等）はチャンネル名
+    ではなくチャンネルIDを要求します。ユーザーが `#general` や `general` の
+    ようにチャンネル名だけを指定した場合、まずこのツールでチャンネルIDに
+    変換してから他のツールに渡してください。ワークスペース内の
+    パブリック／プライベートチャンネルを対象に、完全一致（大文字小文字を
+    区別しない）で検索します。DM・グループDMは対象外です。
+
+    Args:
+        channel_name: 検索するチャンネル名。先頭の `#` は付けても付けなくても
+            構いません（例: "general" または "#general"）。
+        include_archived: アーカイブ済みチャンネルも検索対象に含めるか。
+            デフォルトは含めない(False)。
+
+    Returns:
+        人間が読みやすい整形済みテキストに加えて、同じ内容を持つ
+        structuredContent（`ChannelIdOutput`）を返します。構造化データには
+        channel_name・channel_id（見つからない場合はnull）・foundが含まれます。
+        該当するチャンネルが無い場合もエラーにはせず found=false を返します。
+        API呼び出し自体に失敗した場合（権限不足など）はisError=trueと
+        エラーメッセージを返します。
+    """
+    try:
+        normalized_name = channel_name.removeprefix("#").strip()
+        client = _get_client()
+        channel_id = client.find_channel_id_by_name(
+            normalized_name, include_archived=include_archived
+        )
+        data = ChannelIdOutput(
+            channel_name=normalized_name,
+            channel_id=channel_id,
+            found=channel_id is not None,
+        )
+        if data.found:
+            text = f"チャンネル「{normalized_name}」のIDは {channel_id} です。"
+        else:
+            text = (
+                f"チャンネル「{normalized_name}」が見つかりませんでした。"
+                "名前を確認するか、アクセス権のあるチャンネルか確認してください。"
+            )
+        return ToolResult(content=text, structured_content=data)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - unexpected errors are still returned as tool results.
+        return ToolResult(content=_tool_error_message(exc), is_error=True)
+
+
 def main() -> None:
     """Run the FastMCP stdio server."""
     mcp.run()
 
 
 __all__ = [
+    "ChannelIdOutput",
     "MessageOutput",
     "SearchContextOutput",
     "SearchResultOutput",
@@ -401,6 +466,7 @@ __all__ = [
     "mcp",
     "parse_slack_url",
     "slack_get_thread_from_url",
+    "slack_resolve_channel_id",
     "slack_search_context",
     "slack_ts_to_local_iso",
 ]

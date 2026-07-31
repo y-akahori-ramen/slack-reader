@@ -1,6 +1,6 @@
 # Slack Reader MCP
 
-Slack Reader MCP は、Slack の情報を**読み取り専用**で参照するローカル MCP サーバーです。FastMCP の stdio transport で動作し、Slack Web API の `assistant.search.context` による検索と `conversations.replies` によるスレッド取得を提供します。
+Slack Reader MCP は、Slack の情報を**読み取り専用**で参照するローカル MCP サーバーです。FastMCP の stdio transport で動作し、Slack Web API の `assistant.search.context` による検索、`conversations.replies` によるスレッド取得、`conversations.list` によるチャンネル名からID解決を提供します。
 
 ## 前提条件
 
@@ -19,7 +19,7 @@ Slack Reader MCP は、Slack の情報を**読み取り専用**で参照する�
 - **User Token のみ使用**し、Bot Token は発行・使用しない
 - Bot Token Scopes は Slack App に追加しない
 - HTTP クライアント層で呼び出し可能エンドポイントをホワイトリスト制限する多層防御を行う
-  - 許可エンドポイント: `assistant.search.context`, `conversations.replies`, `users.info`, `oauth.v2.access`
+  - 許可エンドポイント: `assistant.search.context`, `conversations.replies`, `conversations.list`, `users.info`, `oauth.v2.access`
   - 上記以外の Slack API 呼び出しは例外になります
 
 ## 成果物構成
@@ -47,7 +47,11 @@ Slack Reader MCP は、Slack の情報を**読み取り専用**で参照する�
    - `groups:history`
    - `im:history`
    - `mpim:history`
+   - `channels:read`
+   - `groups:read`
    - `users:read`
+
+   `channels:read` / `groups:read` は `slack_resolve_channel_id` ツール（チャンネル名→ID解決）が使用する `conversations.list` に必要です。
 4. **Bot Token Scopes は追加しないでください。**
 5. **Redirect URLs** に次を登録します。
 
@@ -207,6 +211,31 @@ Slack のメッセージ URL またはスレッド URL からスレッド全文�
     "messages": [
       {"ts": "...", "timestamp": "...", "author": "...", "text": "..."}
     ]
+  }
+  ```
+
+### `slack_resolve_channel_id(channel_name, include_archived=False)`
+
+チャンネル名からチャンネルIDを解決します。`conversations.replies` などのAPIはチャンネル名ではなくIDを要求するため、ユーザーがチャンネル名だけを指定した場合に事前解決するためのツールです。
+
+引数:
+
+- `channel_name` (`str`, 必須): チャンネル名。先頭の `#` は付けても付けなくても可（例: `"general"` または `"#general"`）
+- `include_archived` (`bool`, 任意): アーカイブ済みチャンネルも検索対象に含めるか。初期値は `False`
+
+動作:
+
+- `GET https://slack.com/api/conversations.list` を `types=public_channel,private_channel` で呼び出し、`cursor` を使って全ページを走査します（最大50ページ）。
+- チャンネル名の完全一致（大文字小文字を区別しない）を探し、最初に見つかったチャンネルIDを返します。
+- DM・グループDMは検索対象外です。パブリック／プライベートチャンネルのみが対象で、トークンでアクセス可能な範囲に限られます。
+- 見つからない場合はエラーにはせず、`found: false` を返します。
+- `structuredContent` は次の形（`ChannelIdOutput`）です。
+
+  ```json
+  {
+    "channel_name": "general",
+    "channel_id": "C123ABC",
+    "found": true
   }
   ```
 

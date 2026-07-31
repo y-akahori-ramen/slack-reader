@@ -22,11 +22,16 @@ ALLOWED_ENDPOINTS = frozenset(
     {
         "assistant.search.context",
         "conversations.replies",
+        "conversations.list",
         "users.info",
         "oauth.v2.access",
     }
 )
 MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>")
+# conversations.list is paginated with limit=200; this caps worst-case
+# iterations so a channel name that doesn't exist cannot hang the tool call
+# indefinitely while scanning a very large workspace.
+MAX_CHANNEL_LIST_PAGES = 50
 
 
 class SlackClientError(Exception):
@@ -40,7 +45,13 @@ class EndpointNotAllowedError(SlackClientError):
 class SlackAPIError(SlackClientError):
     """Raised for Slack Web API errors with user-actionable guidance."""
 
-    def __init__(self, error_code: str, message: str, *, response: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        error_code: str,
+        message: str,
+        *,
+        response: Mapping[str, Any] | None = None,
+    ) -> None:
         self.error_code = error_code
         self.response = response
         super().__init__(message)
@@ -71,7 +82,9 @@ class SlackClient:
         self._max_retry_after = max(0.0, max_retry_after)
         self._user_cache: dict[str, str] = {}
 
-    def search_context(self, query: str, count: int = 10, cursor: str | None = None) -> dict[str, Any]:
+    def search_context(
+        self, query: str, count: int = 10, cursor: str | None = None
+    ) -> dict[str, Any]:
         """Search Slack context using assistant.search.context."""
         limit = min(max(count, 1), 20)
         payload: dict[str, Any] = {"query": query, "limit": limit}
@@ -91,6 +104,60 @@ class SlackClient:
         if cursor:
             params["cursor"] = cursor
         return self._request("GET", "conversations.replies", params=params)
+
+    def conversations_list(
+        self,
+        cursor: str | None = None,
+        limit: int = 200,
+        types: str = "public_channel,private_channel",
+        exclude_archived: bool = True,
+    ) -> dict[str, Any]:
+        """List Slack channels visible to the authorized user."""
+        params: dict[str, Any] = {
+            "limit": limit,
+            "types": types,
+            "exclude_archived": exclude_archived,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        return self._request("GET", "conversations.list", params=params)
+
+    def find_channel_id_by_name(
+        self, name: str, *, include_archived: bool = False
+    ) -> str | None:
+        """Resolve a channel name (with or without a leading '#') to its channel ID.
+
+        Paginates through conversations.list looking for an exact (case-insensitive)
+        name match. Returns None if no matching channel is found within the page
+        limit. Requires the channels:read / groups:read scopes.
+        """
+        target = name.removeprefix("#").strip().lower()
+        if not target:
+            return None
+
+        cursor: str | None = None
+        for _ in range(MAX_CHANNEL_LIST_PAGES):
+            response = self.conversations_list(
+                cursor=cursor, exclude_archived=not include_archived
+            )
+            channels = response.get("channels") or []
+            if isinstance(channels, list):
+                for channel in channels:
+                    if not isinstance(channel, dict):
+                        continue
+                    channel_name = str(channel.get("name") or "").lower()
+                    if channel_name == target:
+                        channel_id = channel.get("id")
+                        return str(channel_id) if channel_id else None
+            metadata = response.get("response_metadata") or {}
+            cursor = (
+                str(metadata.get("next_cursor") or "")
+                if isinstance(metadata, dict)
+                else ""
+            )
+            if not cursor:
+                break
+        return None
 
     def users_info(self, user: str) -> dict[str, Any]:
         """Fetch Slack user information."""
@@ -115,7 +182,9 @@ class SlackClient:
             display_name = str(display_name)
             self._user_cache[user_id] = display_name
             return display_name
-        except Exception as exc:  # noqa: BLE001 - mention resolution must not break tool output.
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - mention resolution must not break tool output.
             logger.debug("Failed to resolve Slack user %s: %s", user_id, exc)
             return user_id
 
@@ -143,7 +212,9 @@ class SlackClient:
         レート制限時は Retry-After を尊重して限定回数だけ再試行します。
         """
         if api_method not in ALLOWED_ENDPOINTS:
-            raise EndpointNotAllowedError(f"Slack API method is not allowed: {api_method}")
+            raise EndpointNotAllowedError(
+                f"Slack API method is not allowed: {api_method}"
+            )
 
         url = f"{SLACK_API_BASE_URL}/{api_method}"
         headers = {"Accept": "application/json"}
@@ -176,7 +247,9 @@ class SlackClient:
 
             data = response.json()
             if not isinstance(data, dict):
-                raise SlackAPIError("invalid_response", "Slack API から不正なレスポンスを受信しました。")
+                raise SlackAPIError(
+                    "invalid_response", "Slack API から不正なレスポンスを受信しました。"
+                )
 
             if data.get("ok", False):
                 return data
@@ -185,7 +258,9 @@ class SlackClient:
             if error_code == "ratelimited" and attempt < self._max_retries:
                 self._sleep_for_retry_after(response.headers.get("Retry-After"))
                 continue
-            raise SlackAPIError(error_code, self._error_message(error_code), response=data)
+            raise SlackAPIError(
+                error_code, self._error_message(error_code), response=data
+            )
 
         raise SlackAPIError("ratelimited", self._error_message("ratelimited"))
 
@@ -215,4 +290,7 @@ class SlackClient:
             "channel_not_found": "指定されたチャンネルが見つからないか、アクセス権がありません。URL と権限を確認してください。",
             "thread_not_found": "指定されたスレッドが見つかりません。Slack URL または thread_ts を確認してください。",
         }
-        return messages.get(error_code, f"Slack API エラーが発生しました (error={error_code})。設定と権限を確認してください。")
+        return messages.get(
+            error_code,
+            f"Slack API エラーが発生しました (error={error_code})。設定と権限を確認してください。",
+        )
