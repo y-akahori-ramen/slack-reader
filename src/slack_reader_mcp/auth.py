@@ -34,16 +34,17 @@ TOKEN_REFRESH_MARGIN_SECONDS = 120
 
 # 書き込みスコープ(chat:write等)の追加は禁止。User token only, no bot token.
 USER_SCOPES: tuple[str, ...] = (
+    "search:read",
     "search:read.public",
     "search:read.private",
     "search:read.im",
     "search:read.mpim",
+    "search:read.files",
+    "search:read.users",
     "channels:history",
     "groups:history",
     "im:history",
     "mpim:history",
-    "channels:read",
-    "groups:read",
     "users:read",
 )
 
@@ -255,6 +256,11 @@ def _receive_oauth_code(
         def do_GET(self) -> None:  # noqa: N802 - stdlib method name
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
+            logger.info(
+                "OAuthコールバックを受信しました: path=%s query=%s",
+                parsed.path,
+                json.dumps(params, ensure_ascii=False),
+            )
 
             if parsed.path != expected_path:
                 self._send_html(404, "Not Found", "認可URLのパスが正しくありません。")
@@ -300,15 +306,27 @@ def _receive_oauth_code(
     server = HTTPServer(("localhost", port), CallbackHandler)
     server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
     logger.info("HTTPSコールバック待受中: https://localhost:%s%s", port, expected_path)
+    deadline = time.monotonic() + 120
+    server.timeout = 120
     try:
-        server.handle_request()
+        # ブラウザがfavicon.ico等の別リクエストを先に送ることがあるため、
+        # 実際のコールバック(code/error)を受け取るまで複数リクエストを処理する。
+        while "code" not in callback and "error" not in callback:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            server.timeout = remaining
+            server.handle_request()
     finally:
         server.server_close()
 
     if "error" in callback:
         raise RuntimeError(callback["error"])
     if "code" not in callback:
-        raise RuntimeError("OAuth callback did not include an authorization code")
+        raise RuntimeError(
+            "OAuth callback did not include an authorization code "
+            "(タイムアウトまたは想定外のリクエストのみ受信しました)"
+        )
     return callback["code"]
 
 
@@ -341,6 +359,26 @@ def _refresh_access_token(config: OAuthConfig, refresh_token: str) -> dict[str, 
     return response
 
 
+def _mask_tokens(payload: dict[str, Any]) -> dict[str, Any]:
+    """トークン等の機微情報をログ出力用にマスクしたコピーを返す。"""
+
+    def mask(value: Any) -> Any:
+        if isinstance(value, str) and len(value) > 8:
+            return value[:6] + "…" + value[-2:]
+        if isinstance(value, dict):
+            return {k: mask(v) if k != "id" else v for k, v in value.items()}
+        return value
+
+    sensitive_keys = {"access_token", "refresh_token", "bot_user_id"}
+    masked: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in sensitive_keys or key == "authed_user":
+            masked[key] = mask(value)
+        else:
+            masked[key] = value
+    return masked
+
+
 def _post_oauth_access(data: dict[str, str]) -> dict[str, Any]:
     with httpx.Client(timeout=30.0) as client:
         response = client.post(OAUTH_ACCESS_URL, data=data)
@@ -348,6 +386,10 @@ def _post_oauth_access(data: dict[str, str]) -> dict[str, Any]:
     payload = response.json()
     if not isinstance(payload, dict):
         raise RuntimeError("Slack returned a non-object response")
+    logger.info(
+        "Slack oauth.v2.access レスポンス: %s",
+        json.dumps(_mask_tokens(payload), ensure_ascii=False),
+    )
     if not payload.get("ok", False):
         error = payload.get("error", "unknown_error")
         needed = payload.get("needed")
@@ -359,6 +401,11 @@ def _post_oauth_access(data: dict[str, str]) -> dict[str, Any]:
 
 
 def _credentials_from_token_response(payload: dict[str, Any]) -> dict[str, Any]:
+    # dump payload for debugging, but mask sensitive info
+    logger.info(
+        "Slack oauth.v2.access レスポンスから認可情報を抽出: %s",
+        json.dumps(_mask_tokens(payload), ensure_ascii=False),
+    )
     authed_user = payload.get("authed_user")
     if not isinstance(authed_user, dict):
         raise RuntimeError("Slack response did not include authed_user")

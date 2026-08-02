@@ -183,65 +183,13 @@ def test_search_context_clamps_count_to_twenty(monkeypatch: pytest.MonkeyPatch) 
     client = SlackClient(lambda: "xoxp-test")
 
     assert client.search_context("hello", count=50)["ok"] is True
-    assert payloads == [{"query": "hello", "limit": 20}]
-
-
-def test_find_channel_id_by_name_matches_case_insensitively_with_or_without_hash(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_request(*args: object, **kwargs: object) -> httpx.Response:
-        return slack_response(
-            json={
-                "ok": True,
-                "channels": [
-                    {"id": "C1", "name": "general"},
-                    {"id": "C2", "name": "random"},
-                ],
-            }
-        )
-
-    monkeypatch.setattr("slack_reader_mcp.slack_client.httpx.request", fake_request)
-    client = SlackClient(lambda: "xoxp-test")
-
-    assert client.find_channel_id_by_name("General") == "C1"
-    assert client.find_channel_id_by_name("#random") == "C2"
-
-
-def test_find_channel_id_by_name_paginates_until_match_found(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pages = [
+    assert payloads == [
         {
-            "ok": True,
-            "channels": [{"id": "C1", "name": "general"}],
-            "response_metadata": {"next_cursor": "page2"},
-        },
-        {"ok": True, "channels": [{"id": "C2", "name": "target"}]},
+            "query": "hello",
+            "limit": 20,
+            "channel_types": "public_channel,private_channel,mpim,im",
+        }
     ]
-    calls: list[dict[str, object]] = []
-
-    def fake_request(*args: object, **kwargs: object) -> httpx.Response:
-        calls.append(dict(kwargs["params"]))
-        return slack_response(json=pages[len(calls) - 1])
-
-    monkeypatch.setattr("slack_reader_mcp.slack_client.httpx.request", fake_request)
-    client = SlackClient(lambda: "xoxp-test")
-
-    assert client.find_channel_id_by_name("target") == "C2"
-    assert len(calls) == 2
-    assert calls[1]["cursor"] == "page2"
-
-
-def test_find_channel_id_by_name_returns_none_when_not_found(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_request(*args: object, **kwargs: object) -> httpx.Response:
-        return slack_response(json={"ok": True, "channels": []})
-
-    monkeypatch.setattr("slack_reader_mcp.slack_client.httpx.request", fake_request)
-    client = SlackClient(lambda: "xoxp-test")
-
-    assert client.find_channel_id_by_name("missing") is None
 
 
 def test_get_access_token_raises_auth_required_when_credentials_missing(
@@ -312,11 +260,6 @@ class _FakeClient:
         return self.replies_pages[
             min(len(self.replies_calls) - 1, len(self.replies_pages) - 1)
         ]
-
-    def find_channel_id_by_name(
-        self, name: str, *, include_archived: bool = False
-    ) -> str | None:
-        return {"general": "C1"}.get(name)
 
 
 def test_slack_search_context_returns_tool_result_with_structured_content(
@@ -474,46 +417,3 @@ def test_slack_get_thread_from_url_stops_at_max_pagination_pages(
 
     assert result.is_error is False
     assert len(fake_client.replies_calls) == server._MAX_THREAD_PAGES
-
-
-def test_slack_resolve_channel_id_found_returns_structured_content(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_client = _FakeClient()
-    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
-
-    result = server.slack_resolve_channel_id(channel_name="#general")
-
-    assert result.is_error is False
-    assert result.structured_content["channel_name"] == "general"
-    assert result.structured_content["channel_id"] == "C1"
-    assert result.structured_content["found"] is True
-    assert "C1" in result.content[0].text
-
-
-def test_slack_resolve_channel_id_not_found_returns_found_false_without_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_client = _FakeClient()
-    monkeypatch.setattr(server, "_get_client", lambda: fake_client)
-
-    result = server.slack_resolve_channel_id(channel_name="missing-channel")
-
-    assert result.is_error is False
-    assert result.structured_content["channel_id"] is None
-    assert result.structured_content["found"] is False
-    assert "見つかりませんでした" in result.content[0].text
-
-
-def test_slack_resolve_channel_id_returns_is_error_tool_result_on_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raise_auth_required() -> _FakeClient:
-        raise AuthRequiredError("認可コマンドを実行してください")
-
-    monkeypatch.setattr(server, "_get_client", raise_auth_required)
-
-    result = server.slack_resolve_channel_id(channel_name="general")
-
-    assert result.is_error is True
-    assert "認可コマンド" in result.content[0].text

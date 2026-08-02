@@ -22,15 +22,10 @@ ALLOWED_ENDPOINTS = frozenset(
     {
         "assistant.search.context",
         "conversations.replies",
-        "conversations.list",
         "users.info",
     }
 )
 MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]+)?>")
-# conversations.list is paginated with limit=200; this caps worst-case
-# iterations so a channel name that doesn't exist cannot hang the tool call
-# indefinitely while scanning a very large workspace.
-MAX_CHANNEL_LIST_PAGES = 50
 
 
 class SlackClientError(Exception):
@@ -86,9 +81,18 @@ class SlackClient:
     def search_context(
         self, query: str, count: int = 10, cursor: str | None = None
     ) -> dict[str, Any]:
-        """Search Slack context using assistant.search.context."""
+        """Search Slack context using assistant.search.context.
+
+        channel_types はAPI既定が"public_channel"のみのため、認可済みスコープ
+        (private/im/mpim)に合わせて明示的に全種別を指定しないと結果が0件に
+        なる。
+        """
         limit = min(max(count, 1), 20)
-        payload: dict[str, Any] = {"query": query, "limit": limit}
+        payload: dict[str, Any] = {
+            "query": query,
+            "limit": limit,
+            "channel_types": "public_channel,private_channel,mpim,im",
+        }
         if cursor:
             payload["cursor"] = cursor
         return self._request("POST", "assistant.search.context", json=payload)
@@ -105,60 +109,6 @@ class SlackClient:
         if cursor:
             params["cursor"] = cursor
         return self._request("GET", "conversations.replies", params=params)
-
-    def conversations_list(
-        self,
-        cursor: str | None = None,
-        limit: int = 200,
-        types: str = "public_channel,private_channel",
-        exclude_archived: bool = True,
-    ) -> dict[str, Any]:
-        """List Slack channels visible to the authorized user."""
-        params: dict[str, Any] = {
-            "limit": limit,
-            "types": types,
-            "exclude_archived": exclude_archived,
-        }
-        if cursor:
-            params["cursor"] = cursor
-        return self._request("GET", "conversations.list", params=params)
-
-    def find_channel_id_by_name(
-        self, name: str, *, include_archived: bool = False
-    ) -> str | None:
-        """Resolve a channel name (with or without a leading '#') to its channel ID.
-
-        Paginates through conversations.list looking for an exact (case-insensitive)
-        name match. Returns None if no matching channel is found within the page
-        limit. Requires the channels:read / groups:read scopes.
-        """
-        target = name.removeprefix("#").strip().lower()
-        if not target:
-            return None
-
-        cursor: str | None = None
-        for _ in range(MAX_CHANNEL_LIST_PAGES):
-            response = self.conversations_list(
-                cursor=cursor, exclude_archived=not include_archived
-            )
-            channels = response.get("channels") or []
-            if isinstance(channels, list):
-                for channel in channels:
-                    if not isinstance(channel, dict):
-                        continue
-                    channel_name = str(channel.get("name") or "").lower()
-                    if channel_name == target:
-                        channel_id = channel.get("id")
-                        return str(channel_id) if channel_id else None
-            metadata = response.get("response_metadata") or {}
-            cursor = (
-                str(metadata.get("next_cursor") or "")
-                if isinstance(metadata, dict)
-                else ""
-            )
-            if not cursor:
-                break
-        return None
 
     def users_info(self, user: str) -> dict[str, Any]:
         """Fetch Slack user information."""
@@ -245,6 +195,12 @@ class SlackClient:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                logger.error(
+                    "Slack API HTTP error for %s: status=%s body=%s",
+                    api_method,
+                    response.status_code,
+                    response.text,
+                )
                 raise SlackAPIError(
                     f"http_{response.status_code}",
                     f"Slack API HTTP エラー ({response.status_code}) が発生しました。時間をおいて再試行してください。",
@@ -252,6 +208,11 @@ class SlackClient:
 
             data = response.json()
             if not isinstance(data, dict):
+                logger.error(
+                    "Slack API invalid response for %s: body=%s",
+                    api_method,
+                    response.text,
+                )
                 raise SlackAPIError(
                     "invalid_response", "Slack API から不正なレスポンスを受信しました。"
                 )
@@ -263,6 +224,7 @@ class SlackClient:
             if error_code == "ratelimited" and attempt < self._max_retries:
                 self._sleep_for_retry_after(response.headers.get("Retry-After"))
                 continue
+            logger.error("Slack API error for %s: full response=%s", api_method, data)
             raise SlackAPIError(
                 error_code, self._error_message(error_code), response=data
             )
